@@ -27,7 +27,7 @@ A powerful and flexible tool for extracting data from blind injection vulnerabil
 1. Clone the repository:
    ```bash
    git clone https://github.com/atlas973287/BlindExtractor
-   cd blind-exploitation-tool
+   cd BlindExtractor
    ```
 
 2. Install dependencies:
