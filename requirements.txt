@@ -1,0 +1,7 @@
+requests>=2.31.0
+click>=8.1.7
+rich>=13.7.0
+concurrent.futures
+tqdm>=4.66.1
+colorama>=0.4.6
+urllib3>=2.1.0 
