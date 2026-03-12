@@ -1,4 +1,10 @@
+import requests
+
 class AbstractStrategy:
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({"Connection": "keep-alive"})
+
     def send_payload(self, payload, timeout=10):
         """Send the payload and return True/False based on the result"""
         raise NotImplementedError("Subclasses must implement this method")

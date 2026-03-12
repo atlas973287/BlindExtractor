@@ -2,6 +2,9 @@ import os
 from strategies.abstract_strategy import AbstractStrategy
 
 class LocalTestStrategy(AbstractStrategy):
+    def __init__(self):
+        super().__init__()
+
     def send_payload(self, payload, timeout=10):
         try:
             print(f"Executing: {payload}")

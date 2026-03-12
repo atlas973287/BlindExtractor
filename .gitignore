@@ -1,0 +1,20 @@
+# Python cache files
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+
+# Python distribution/packaging
+dist/
+build/
+*.egg-info/
+
+# Virtual Environment
+venv/
+env/
+.env/
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+.DS_Store

@@ -22,6 +22,7 @@ if __name__ == "__main__":
     # strategy = JavaRCEStrategy(url="http://localhost/")  # For Java RCE
     # strategy = PickleRCEStrategy(url="http://localhost/")  # For Pickle RCE
     # strategy = SQLiStrategy(url="http://localhost/")  # For SQL Injection
+    # strategy = OracleStrategy(url="http://localhost/") #For ORACLE Injection
     strategy = LocalTestStrategy()  # For local testing
     debug_mode = args.debug
     if debug_mode:
